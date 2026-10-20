@@ -30,6 +30,26 @@ export async function requestDevice(adapter: GPUAdapter): Promise<GPUDevice> {
   return adapter.requestDevice({ requiredFeatures, requiredLimits });
 }
 
+let shared: Promise<GPUDevice> | null = null;
+
+/**
+ * One device shared by every GPU implementation in this worker. The runner creates it
+ * before measuring, so device creation isn't charged to whichever implementation runs first.
+ */
+export function sharedDevice(): Promise<GPUDevice> {
+  shared ??= (async () => {
+    const adapter = await requestAdapter();
+    if (!adapter) throw new Error('no WebGPU adapter in this context');
+    const device = await requestDevice(adapter);
+    device.lost.then(() => (shared = null));
+    return device;
+  })().catch((e) => {
+    shared = null;
+    throw e;
+  });
+  return shared;
+}
+
 /** Copies `size` bytes of `src` (needs COPY_SRC usage) into a staging buffer and maps it. */
 export async function readBuffer(device: GPUDevice, src: GPUBuffer, size: number): Promise<ArrayBuffer> {
   const staging = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });

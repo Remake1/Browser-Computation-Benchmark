@@ -1,47 +1,155 @@
 :root {
-  color-scheme: light dark;
-  --bg: #fafafa;
-  --fg: #1d1d1f;
-  --muted: #6b6b70;
-  --line: #dcdce0;
-  --pass: #1a7f37;
-  --fail: #c62828;
-  --warn: #9a6700;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  background: var(--bg);
-  color: var(--fg);
+    color-scheme: light dark;
+    --bg: #fafafa;
+    --fg: #1d1d1f;
+    --muted: #6b6b70;
+    --line: #dcdce0;
+    --pass: #1a7f37;
+    --fail: #c62828;
+    --warn: #9a6700;
+    font-family:
+        system-ui,
+        -apple-system,
+        "Segoe UI",
+        sans-serif;
+    background: var(--bg);
+    color: var(--fg);
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #161618;
-    --fg: #ececf0;
-    --muted: #9a9aa2;
-    --line: #34343a;
-    --pass: #4ac26b;
-    --fail: #ff6b6b;
-    --warn: #d4a72c;
-  }
+    :root {
+        --bg: #161618;
+        --fg: #ececf0;
+        --muted: #9a9aa2;
+        --line: #34343a;
+        --pass: #4ac26b;
+        --fail: #ff6b6b;
+        --warn: #d4a72c;
+    }
 }
-body { margin: 0; background: var(--bg); }
-main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
-h1 { margin: 0 0 4px; font-size: 1.6rem; }
-h2 { margin: 28px 0 8px; font-size: 1.1rem; }
-.sub, .meta { color: var(--muted); }
-.meta { font-size: 0.85rem; word-break: break-word; }
-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.92rem; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; border: 1px solid currentColor; }
-.badge.pass { color: var(--pass); }
-.badge.fail { color: var(--fail); }
-.badge.unsupported { color: var(--warn); }
-.verdict { font-weight: 600; font-size: 1.05rem; }
-.verdict.pass { color: var(--pass); }
-.verdict.fail { color: var(--fail); }
-label { display: block; margin-top: 24px; font-weight: 600; }
-textarea { width: 100%; box-sizing: border-box; margin-top: 6px; font: inherit; padding: 6px 8px; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 6px; }
-.actions { display: flex; gap: 8px; margin-top: 10px; }
-button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
-button:disabled { opacity: 0.5; cursor: default; }
-details { margin-top: 24px; }
-pre { overflow-x: auto; font-size: 0.8rem; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
+body {
+    margin: 0;
+    background: var(--bg);
+}
+main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 16px 64px;
+}
+h1 {
+    margin: 0 0 4px;
+    font-size: 1.6rem;
+}
+h2 {
+    margin: 28px 0 8px;
+    font-size: 1.1rem;
+}
+.sub,
+.meta {
+    color: var(--muted);
+}
+.meta {
+    font-size: 0.85rem;
+    word-break: break-word;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 0.92rem;
+}
+th,
+td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+}
+th {
+    color: var(--muted);
+    font-weight: 600;
+}
+.badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid currentColor;
+}
+.badge.pass {
+    color: var(--pass);
+}
+.badge.fail {
+    color: var(--fail);
+}
+.badge.unsupported {
+    color: var(--warn);
+}
+.verdict {
+    font-weight: 600;
+    font-size: 1.05rem;
+}
+.verdict.pass {
+    color: var(--pass);
+}
+.verdict.fail {
+    color: var(--fail);
+}
+label {
+    display: block;
+    margin-top: 24px;
+    font-weight: 600;
+}
+textarea {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 6px;
+    font: inherit;
+    padding: 6px 8px;
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+}
+.actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+button {
+    font: inherit;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+details {
+    margin-top: 24px;
+}
+pre {
+    overflow-x: auto;
+    font-size: 0.8rem;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+}
+fieldset {
+    margin-top: 16px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+}
+fieldset label {
+    margin-top: 4px;
+    font-weight: normal;
+}
+input[type="number"] {
+    margin-top: 6px;
+    font: inherit;
+    padding: 4px 8px;
+}

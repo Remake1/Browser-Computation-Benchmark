@@ -26,5 +26,10 @@ export default defineConfig({
   server: { headers: isolationHeaders },
   preview: { headers: isolationHeaders },
   worker: { format: 'es' },
-  build: { target: 'es2022' },
+  build: {
+    target: 'es2022',
+    rolldownOptions: {
+      input: { main: 'index.html', env: 'env.html' },
+    },
+  },
 });

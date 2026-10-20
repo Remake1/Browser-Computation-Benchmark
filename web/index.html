@@ -3,26 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>BCB Harness — Environment</title>
+    <title>BCB Harness — Runner</title>
     <link rel="icon" href="data:," />
   </head>
   <body>
     <main>
-      <h1>Environment report</h1>
-      <p class="sub">Milestone 0: cross-origin isolation, WASM SIMD/threads, and WebGPU inside the benchmark worker.</p>
-      <section id="checks"><p>Running checks…</p></section>
-      <section>
-        <label for="notes">Device notes (model, plugged in / on battery)</label>
-        <textarea id="notes" rows="2" placeholder="e.g. MacBook Pro M4 Pro, plugged in"></textarea>
-        <div class="actions">
-          <button id="rerun" type="button">Re-run</button>
-          <button id="download" type="button" disabled>Download env.json</button>
-        </div>
-      </section>
-      <details open>
-        <summary>Raw report</summary>
-        <pre id="raw"></pre>
-      </details>
+      <p><a href="env.html">Environment report →</a></p>
+      <h1>Benchmark runner</h1>
+      <fieldset id="workloads"><legend>Workloads</legend></fieldset>
+      <label for="seed">Seed</label>
+      <input id="seed" type="number" value="1" min="0" step="1" />
+      <label for="notes">Device notes (model, plugged in / on battery)</label>
+      <textarea id="notes" rows="2" placeholder="e.g. MacBook Pro M4 Pro, plugged in"></textarea>
+      <div class="actions">
+        <button id="start" type="button">Run</button>
+        <button id="stop" type="button" disabled>Stop</button>
+        <button id="json" type="button" disabled>Download JSON</button>
+        <button id="csv" type="button" disabled>Download CSV</button>
+      </div>
+      <p id="status" class="meta"></p>
+      <table>
+        <thead>
+          <tr>
+            <th>Workload</th><th>n</th><th>Implementation</th><th>Status</th><th>k × samples</th>
+            <th>Total ms (median)</th><th>Compute ms (median ± IQR)</th><th>GPU ms</th><th>Init ms</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
