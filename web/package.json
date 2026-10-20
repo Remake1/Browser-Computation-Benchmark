@@ -1,0 +1,24 @@
+{
+  "name": "bcb-harness",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "build:wasm": "make -C ../wasm",
+    "check:simd": "make -C ../wasm check-simd",
+    "dev": "vite",
+    "build": "pnpm typecheck && vite build",
+    "preview": "vite preview",
+    "serve:nginx": "docker compose -f ../deploy/docker-compose.yml up",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "wasm-feature-detect": "^1.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

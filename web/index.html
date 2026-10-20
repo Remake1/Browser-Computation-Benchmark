@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BCB Harness — Environment</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <main>
+      <h1>Environment report</h1>
+      <p class="sub">Milestone 0: cross-origin isolation, WASM SIMD/threads, and WebGPU inside the benchmark worker.</p>
+      <section id="checks"><p>Running checks…</p></section>
+      <section>
+        <label for="notes">Device notes (model, plugged in / on battery)</label>
+        <textarea id="notes" rows="2" placeholder="e.g. MacBook Pro M4 Pro, plugged in"></textarea>
+        <div class="actions">
+          <button id="rerun" type="button">Re-run</button>
+          <button id="download" type="button" disabled>Download env.json</button>
+        </div>
+      </section>
+      <details open>
+        <summary>Raw report</summary>
+        <pre id="raw"></pre>
+      </details>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
