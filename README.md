@@ -25,6 +25,12 @@ pnpm build:wasm                 # wasm/src/*.cpp → web/public/wasm/<name>-{sca
 pnpm check:simd                 # confirms v128 instructions in the simd/threads builds and none in scalar
 ```
 
+Optional native ceiling (same C++, `clang -O3 -ffp-contract=off`):
+
+```sh
+make -C native run              # bin/matmul-{scalar,simd,threads}: median ms and GFLOP/s per size
+```
+
 `wasm/Makefile` uses `.tools/emsdk` when it exists and otherwise uses `em++` from `PATH`. To use the SDK in a shell, run `source .tools/emsdk/emsdk_env.sh`.
 
 ## Running
@@ -70,3 +76,27 @@ The protocol is implemented in `web/src/harness/runner.ts` (PLAN.md §4):
 - WebGPU implementations share one device, created before measuring (`gpu.deviceInitMs`). They report GPU-side time through `gpuTimeMs()` using `GpuTimer` (timestamp-query). The observed quantization of the timestamps is recorded as `gpu.timestampResolutionNs`; Chrome rounds to 65,536 ns by default.
 
 The `dummy` workload (an f32 sum through JS, the three `hello` WASM builds, and a single-workgroup WGSL kernel) exists only to exercise the harness.
+
+## Milestone 2: matrix multiply
+
+`web/src/workloads/matmul/` computes C = A·B for N×N row-major `f32` matrices, N = 16…2048, with 1.5× steps between powers of two. Inputs are uniform in [−1, 1).
+
+| Implementation | What it is |
+|---|---|
+| `js` | i-k-j loops over `Float32Array` |
+| `wasm-scalar`, `wasm-simd` | `wasm/src/matmul.cpp`, the same i-k-j loops. In the SIMD build the inner loop auto-vectorizes to `f32x4` (`pnpm check:simd`) |
+| `wasm-threads` | the same loops, with contiguous blocks of rows split across a persistent pool (`wasm/include/threadpool.hpp`) of `min(hardwareConcurrency, 8)` threads, created in `init()` |
+| `gpu-naive` | `naive.wgsl`: one invocation per element of C, 16×16 workgroups |
+| `gpu-opt` | `tiled.wgsl`: 16×16 tiles of A and B staged in workgroup memory |
+
+Verification (`reference.ts`) compares against an f64 reference using the componentwise bound `|C − R| ≤ 1e-3 · (|A|·|B|)`, which stays meaningful for entries near zero. The reference is computed once per input. Above about 2²⁸ multiply-adds it checks a subset of rows: the first and last 16, plus an even spread of the rest (64 rows at N = 2048). The UI shows GFLOP/s (2N³ / median compute time) for workloads that define `flops()`.
+
+`native/` builds the same `matmul.cpp` natively for comparison. Apple M4 Pro, median GFLOP/s:
+
+| N | scalar | simd (NEON) | threads (8) |
+|---|---|---|---|
+| 256 | 7.7 | 33 | 202 |
+| 1024 | 8.3 | 33 | 251 |
+| 2048 | 8.3 | 33 | 249 |
+
+**Caveat: Chrome on macOS can run workers on the efficiency cores.** On battery, Chrome 151 ran dedicated workers, including the pthread workers of `wasm-threads`, on the M4 Pro's 4 E-cores. The main thread stayed on the P-cores. The same JS kernel ran at 2.2 GFLOP/s on the page's main thread and 0.3–0.4 in a worker. Combined throughput of 1–8 workers capped at about 4 cores. So CPU numbers measured this way are E-core numbers. This affects CPU numbers only (GPU work is not run on worker threads), and the env notes should say whether the machine was plugged in. On mains power the worker reaches native-like speeds: JS 2.8 GFLOP/s (Node: 2.75), wasm-scalar 8.0 (native: 8.3), wasm-simd 24.5 (native: 33). **Collect benchmark data plugged in.**

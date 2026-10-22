@@ -10,3 +10,6 @@ web/dist/
 web/public/wasm/
 
 .DS_Store
+
+# native ceiling builds
+native/bin/

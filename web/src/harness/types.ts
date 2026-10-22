@@ -38,6 +38,8 @@ export interface Workload<I, O> {
   generate(size: number, seed: number): I;
   /** Tolerance-aware check against an f64 / exact reference. */
   verify(output: O, input: I): boolean;
+  /** Floating-point operations of one run at this size, for GFLOP/s; omitted where FLOPs aren't the natural unit. */
+  flops?(size: number): number;
   implementations: Implementation<I, O>[];
 }
 
