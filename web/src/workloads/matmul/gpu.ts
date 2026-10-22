@@ -1,4 +1,4 @@
-import { readBuffer, sharedDevice } from '../../backends/gpu';
+import { createStagingBuffer, readBuffer, sharedDevice } from '../../backends/gpu';
 import { GpuTimer } from '../../harness/timer';
 import { Unsupported, type Implementation } from '../../harness/types';
 import type { MatmulInput } from '.';
@@ -6,7 +6,10 @@ import type { MatmulInput } from '.';
 /** Workgroup edge of both shaders (@workgroup_size(TILE, TILE)); one invocation per element of C. */
 const TILE = 16;
 
-/** Runs one of the matmul shaders (naive.wgsl, tiled.wgsl); they share bindings and dispatch shape. */
+/**
+ * Runs one of the matmul shaders (naive.wgsl, tiled.wgsl); they share bindings and dispatch shape.
+ * Buffers and the bind group are kept across iterations at the same N; setup() only uploads.
+ */
 export class GpuMatmul implements Implementation<MatmulInput, Float32Array> {
   readonly tech = 'webgpu';
   private device?: GPUDevice;
@@ -14,9 +17,13 @@ export class GpuMatmul implements Implementation<MatmulInput, Float32Array> {
   private timer?: GpuTimer;
   private params?: GPUBuffer;
   private buffers: GPUBuffer[] = [];
+  private a?: GPUBuffer;
+  private b?: GPUBuffer;
   private c?: GPUBuffer;
+  private staging?: GPUBuffer;
   private bindGroup?: GPUBindGroup;
-  private n = 0;
+  /** N the buffers were allocated for. */
+  private n = -1;
 
   constructor(
     readonly id: string,
@@ -36,17 +43,30 @@ export class GpuMatmul implements Implementation<MatmulInput, Float32Array> {
   }
 
   async setup(input: MatmulInput): Promise<void> {
+    if (input.n !== this.n) {
+      this.release();
+      this.allocate(input.n);
+    }
     const device = this.device!;
-    const bytes = input.a.byteLength;
-    this.n = input.n;
+    device.queue.writeBuffer(this.a!, 0, input.a);
+    device.queue.writeBuffer(this.b!, 0, input.b);
+    await device.queue.onSubmittedWorkDone();
+  }
+
+  private allocate(n: number): void {
+    const device = this.device!;
+    const bytes = n * n * 4;
     const a = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const b = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const c = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    this.buffers = [a, b, c];
+    const staging = createStagingBuffer(device, bytes);
+    this.buffers = [a, b, c, staging];
+    this.a = a;
+    this.b = b;
     this.c = c;
-    device.queue.writeBuffer(a, 0, input.a);
-    device.queue.writeBuffer(b, 0, input.b);
-    device.queue.writeBuffer(this.params!, 0, new Uint32Array([input.n, 0, 0, 0]));
+    this.staging = staging;
+    this.n = n;
+    device.queue.writeBuffer(this.params!, 0, new Uint32Array([n, 0, 0, 0]));
     this.bindGroup = device.createBindGroup({
       layout: this.pipeline!.getBindGroupLayout(0),
       entries: [
@@ -56,7 +76,6 @@ export class GpuMatmul implements Implementation<MatmulInput, Float32Array> {
         { binding: 3, resource: { buffer: this.params! } },
       ],
     });
-    await device.queue.onSubmittedWorkDone();
   }
 
   async run(): Promise<void> {
@@ -74,13 +93,14 @@ export class GpuMatmul implements Implementation<MatmulInput, Float32Array> {
   }
 
   async readback(): Promise<Float32Array> {
-    return new Float32Array(await readBuffer(this.device!, this.c!, this.n * this.n * 4));
+    return new Float32Array(await readBuffer(this.device!, this.c!, this.n * this.n * 4, this.staging));
   }
 
-  teardown(): void {
+  release(): void {
     for (const buf of this.buffers) buf.destroy();
     this.buffers = [];
-    this.c = this.bindGroup = undefined;
+    this.a = this.b = this.c = this.staging = this.bindGroup = undefined;
+    this.n = -1;
   }
 
   gpuTimeMs(): Promise<number | undefined> {
@@ -88,6 +108,7 @@ export class GpuMatmul implements Implementation<MatmulInput, Float32Array> {
   }
 
   dispose(): void {
+    this.release();
     this.timer?.destroy();
     this.params?.destroy();
   }

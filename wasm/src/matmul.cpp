@@ -15,7 +15,7 @@
 
 #include <cstddef>
 
-#if defined(__EMSCRIPTEN_PTHREADS__) || defined(MATMUL_NATIVE_THREADS)
+#if defined(__EMSCRIPTEN_PTHREADS__) || defined(NATIVE_THREADS)
 #define MATMUL_THREADS 1
 #include <memory>
 

@@ -10,7 +10,8 @@ export type WorkloadId = 'dummy' | 'matmul' | 'reduction' | 'sort' | 'convolutio
  * One way of computing a workload. Per sample the runner calls
  * setup → run → readback (each timed as its phase) → teardown (untimed),
  * so every iteration starts from freshly uploaded input; in-place algorithms
- * (sort) need no separate reset step.
+ * (sort) need no separate reset step. After the last iteration at a size the
+ * runner calls release (untimed).
  */
 export interface Implementation<I, O> {
   /** 'js', 'wasm-scalar', 'wasm-simd', 'wasm-threads', 'gpu-naive', 'gpu-opt', … */
@@ -24,8 +25,14 @@ export interface Implementation<I, O> {
   run(): Promise<void>;
   /** Copy the result back to JS → 'readback' phase. */
   readback(): Promise<O>;
-  /** Untimed: release what setup() allocated. */
+  /**
+   * Untimed, after every iteration: release per-iteration state. Size-dependent resources
+   * (GPU buffers) may instead be kept for the next setup() at the same size, so samples
+   * don't pay fresh-allocation costs that WASM's reused heap pages don't pay either.
+   */
   teardown?(): void;
+  /** Untimed, after the last iteration at a size: release what setup() kept for reuse. */
+  release?(): void;
   /** Untimed: GPU-side time (timestamp-query) of the run() calls since the last call, in ms; undefined if unavailable. */
   gpuTimeMs?(): Promise<number | undefined>;
   dispose(): void;
@@ -40,6 +47,8 @@ export interface Workload<I, O> {
   verify(output: O, input: I): boolean;
   /** Floating-point operations of one run at this size, for GFLOP/s; omitted where FLOPs aren't the natural unit. */
   flops?(size: number): number;
+  /** Bytes one run must read from memory at this size, for GB/s; omitted where bandwidth isn't the natural unit. */
+  bytes?(size: number): number;
   implementations: Implementation<I, O>[];
 }
 

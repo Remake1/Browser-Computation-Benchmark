@@ -33,12 +33,14 @@ for (const w of WORKLOADS) {
 
 const fmt = (ms: number | undefined) => (ms === undefined || !Number.isFinite(ms) ? '' : ms.toPrecision(3));
 const flopsOf = new Map(WORKLOADS.map((w) => [w.id, w.flops]));
+const bytesOf = new Map(WORKLOADS.map((w) => [w.id, w.bytes]));
 
 function addRow(r: SampleRecord): void {
   const totals = summarize(r.samples.map((t: PhaseTimes) => t.upload + t.compute + t.readback));
   const compute = summarize(r.samples.map((t) => t.compute));
   const gpu = r.samples.flatMap((t) => (t.gpuCompute === undefined ? [] : [t.gpuCompute]));
   const flops = flopsOf.get(r.workload)?.(r.size);
+  const bytes = bytesOf.get(r.workload)?.(r.size);
   const cells = [
     r.workload,
     String(r.size),
@@ -49,6 +51,7 @@ function addRow(r: SampleRecord): void {
     compute.n ? `${fmt(compute.median)} ± ${fmt(compute.iqr)}` : '',
     gpu.length ? fmt(summarize(gpu).median) : '',
     flops && compute.n ? fmt(flops / (compute.median * 1e6)) : '', // from the compute median
+    bytes && compute.n ? fmt(bytes / (compute.median * 1e6)) : '',
     fmt(r.initMs),
   ];
   const tr = rowsEl.insertRow();

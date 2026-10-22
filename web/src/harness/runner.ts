@@ -77,6 +77,8 @@ async function runWorkload(workload: AnyWorkload, config: RunConfig, events: Run
         } catch (e) {
           record.status = 'error';
           record.message = String(e);
+        } finally {
+          impl.release?.();
         }
         if (record.status === 'timeout' || record.status === 'error') {
           stopped.set(impl, { status: 'skipped', message: `${record.status} at n=${size}` });
@@ -99,6 +101,25 @@ async function iteration(impl: Impl, input: unknown): Promise<{ output: unknown;
   } finally {
     impl.teardown?.();
   }
+}
+
+/**
+ * Iterations per sample so a sample spans at least minSampleMs. Short iterations are
+ * timed as one span of back-to-back runs: their per-phase times are each rounded to
+ * the timer resolution (5 µs when cross-origin isolated), which made the old estimate
+ * jump between 1000, 200 and 100 repeats, or fall to 40 on a JIT-cold warmup median.
+ */
+async function calibrateRepeats(impl: Impl, input: unknown, minSampleMs: number): Promise<number> {
+  let count = 0;
+  let elapsed = 0;
+  const t0 = performance.now();
+  while (elapsed < minSampleMs && count < MAX_REPEATS) {
+    await iteration(impl, input);
+    count++;
+    elapsed = performance.now() - t0;
+  }
+  await impl.gpuTimeMs?.(); // discard calibration GPU times
+  return elapsed > 0 ? Math.min(MAX_REPEATS, Math.ceil((minSampleMs * count) / elapsed)) : MAX_REPEATS;
 }
 
 /** Fills `record` in place: status, firstRun, repeats, samples. */
@@ -127,7 +148,7 @@ async function measure(workload: AnyWorkload, impl: Impl, input: unknown, config
 
   // Batch short iterations so each sample spans at least minSampleMs.
   const perIteration = warm.length ? median(warm) : total(first.times);
-  const repeats = perIteration >= config.minSampleMs ? 1 : Math.min(MAX_REPEATS, Math.ceil(config.minSampleMs / Math.max(perIteration, 1e-3)));
+  const repeats = perIteration >= config.minSampleMs ? 1 : await calibrateRepeats(impl, input, config.minSampleMs);
   record.repeats = repeats;
 
   const samplingStart = performance.now();

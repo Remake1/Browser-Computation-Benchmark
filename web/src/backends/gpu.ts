@@ -50,14 +50,24 @@ export function sharedDevice(): Promise<GPUDevice> {
   return shared;
 }
 
-/** Copies `size` bytes of `src` (needs COPY_SRC usage) into a staging buffer and maps it. */
-export async function readBuffer(device: GPUDevice, src: GPUBuffer, size: number): Promise<ArrayBuffer> {
-  const staging = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+/**
+ * Copies `size` bytes of `src` (needs COPY_SRC usage) into a staging buffer and maps it.
+ * Pass a reusable `staging` buffer (COPY_DST | MAP_READ, ≥ size bytes) to skip allocating
+ * one per call; it is left unmapped. Otherwise a temporary one is created and destroyed.
+ */
+export async function readBuffer(device: GPUDevice, src: GPUBuffer, size: number, staging?: GPUBuffer): Promise<ArrayBuffer> {
+  const buffer = staging ?? device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
   const encoder = device.createCommandEncoder();
-  encoder.copyBufferToBuffer(src, 0, staging, 0, size);
+  encoder.copyBufferToBuffer(src, 0, buffer, 0, size);
   device.queue.submit([encoder.finish()]);
-  await staging.mapAsync(GPUMapMode.READ);
-  const copy = staging.getMappedRange().slice(0);
-  staging.destroy();
+  await buffer.mapAsync(GPUMapMode.READ, 0, size);
+  const copy = buffer.getMappedRange(0, size).slice(0);
+  if (staging) buffer.unmap();
+  else buffer.destroy();
   return copy;
+}
+
+/** A staging buffer for readBuffer(), reusable across reads of up to `size` bytes. */
+export function createStagingBuffer(device: GPUDevice, size: number): GPUBuffer {
+  return device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
 }
