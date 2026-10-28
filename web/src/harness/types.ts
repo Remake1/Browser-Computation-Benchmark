@@ -47,7 +47,7 @@ export interface Workload<I, O> {
   verify(output: O, input: I): boolean;
   /** Floating-point operations of one run at this size, for GFLOP/s; omitted where FLOPs aren't the natural unit. */
   flops?(size: number): number;
-  /** Bytes one run must read from memory at this size, for GB/s; omitted where bandwidth isn't the natural unit. */
+  /** Bytes one run must read from and write to memory at this size, for GB/s; omitted where bandwidth isn't the natural unit. */
   bytes?(size: number): number;
   implementations: Implementation<I, O>[];
 }
