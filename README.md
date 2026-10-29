@@ -261,3 +261,55 @@ First sweep (Chrome 156 headless, M4 Pro plugged in, 8 threads, 65,536 ns timest
 | 2²⁴ | 339 | 330 | 1,794 | 21 |
 
 The browser's `wasm-scalar` reaches 65–85 % of native radix scalar below 2²⁰, where the data is in cache, and 92–100 % from 2²⁰ on. The library sorts don't line up: Chrome's built-in sort (57 Mkeys/s at 2²⁴) and `wasm-std` (35, Emscripten's libc++) are both faster than this native `std::sort` (21, the system libc++). The comparison between library sorts reflects the library versions, not WASM overhead.
+
+## Milestone 4: edit distance
+
+`web/src/workloads/editdistance/` computes the Levenshtein distance (unit costs) between two strings of length L over {A, C, G, T}, L = 64…32768, with 1.5× steps between powers of two. The strings are independent and uniform, stored one code (0–3) per byte. Every implementation returns the **last row of the DP matrix**, D[L][0..L], the distance from a to every prefix of b; its last entry is the edit distance. The UI shows M items/s, here Mcells/s (L² / median compute time). This is the negative control of PLAN.md §7: every cell depends on its left, upper and diagonal neighbours.
+
+| Implementation | What it is |
+|---|---|
+| `js` | the two-row DP over `Uint16Array` rows, carrying the left and diagonal cells in locals |
+| `wasm-scalar` | `ed_rows` in `wasm/src/editdistance.cpp`, the same loop |
+| `wasm-simd` | `ed_tiled`: blocked anti-diagonal wavefront over 512×512 tiles, one tile after another. Inside a tile the cells of one anti-diagonal are independent; that loop auto-vectorizes to `i16x8` (8 u16 cells per instruction: `i8x16.ne` on the characters, `i16x8.min_u`; `pnpm check:simd`) |
+| `wasm-threads` | `ed_tiled` with the tiles of each tile anti-diagonal split across the persistent pool; `pool->run()` returning is the barrier between tile anti-diagonals (2L/512 − 1 of them) |
+| `gpu-naive` | `naive.wgsl`: one dispatch per anti-diagonal of cells, one invocation per cell, three rotating anti-diagonals in a storage buffer: 2L + 1 dispatches (65,537 at L = 32768) |
+| `gpu-opt` | `tiled.wgsl`: one workgroup of 256 invocations per 256×256 tile, one dispatch per anti-diagonal of tiles (255 at L = 32768). Invocation t owns tile row t + 1 and computes its cells left to right, one per step, reading the cell above from invocation t − 1's previous step in double-buffered workgroup memory: one `workgroupBarrier` per step, 511 per full tile |
+
+Each dispatch selects its parameters (anti-diagonal index) from a 256-byte slot of one uniform buffer with a dynamic offset, like the bitonic sort. All dispatches are in one compute pass, so `timestamp-query` covers them all.
+
+Methodology decisions:
+
+- **`wasm-simd` runs a different algorithm from `wasm-scalar`.** PLAN.md §7 lists the two-row DP for the C++ scalar/SIMD builds, but each cell of a row depends on the one to its left, so the row loop has no vector form; with it, the simd build would be the scalar code again (as in sort). Cells of one anti-diagonal are independent, so the simd and threads builds run the tiled anti-diagonal wavefront and `wasm-threads` vs. `wasm-simd` stays a pure threading comparison. The scalar → SIMD gap therefore includes the change of algorithm. `native/` measures it: the tiled kernel compiled without vectorization runs at 1.88 Gcells/s against 1.36 for the rows (both scalar), so ~1.4× of the native 6.6× gap comes from the anti-diagonal layout (no loop-carried `min` chain) and the rest from the 8 lanes.
+- **Tiles pass their boundaries, not the whole matrix.** `rows[r]` holds D[min(512r, L)][0..L] and `cols[c]` holds D[0..L][min(512c, L)]. Tile (r, c) reads `rows[r][j0..j1]` and `cols[c][i0+1..i1]` and writes `rows[r+1][j0+1..j1]` and `cols[c+1][i0+1..i1]`, so tiles on the same anti-diagonal never touch the same entry and `rows[last]` is the output. The GPU kernel uses the same layout with 256-wide tiles. The matrix edges are written once (when the GPU buffers are allocated), never overwritten, so reused buffers start every iteration correctly.
+- **Tile size 512 on the CPU** (native, M4 Pro, 8 threads): 128-wide tiles reached 27 Gcells/s at L = 32768, 256-wide 32, 512-wide 45 and 1024-wide 46; at L = 2048, 512 and 1024 gave 11.4 and 10.8. Single-threaded, 512 is 6 % faster than 256. The cost is parallelism at small L: up to L = 512 there is one tile and `wasm-threads` runs on one thread plus a pool wake-up.
+- **Cells are u16** in the CPU implementations (8 per `v128`), which limits L to 65535; the GPU stores u32.
+- **The JS and C++ loops use the same expression,** `min(min(diag + (aᵢ ≠ bⱼ), up + 1), left + 1)`, with the mismatch as `+(ai !== b[j - 1])` in JS. Writing it as a ternary `? 0 : 1` made the loop 15 % slower on random DNA in Node 24 (presumably a mispredicted branch). `min(diag + cost, min(up, left) + 1)` was 13 % faster than the chosen form in Node 24 but 24 % slower natively, because it puts three operations on the `left` dependency chain instead of two. The baseline stays the same source as the C++, as in convolution.
+- **Verification** (`reference.ts`) requires the output row to equal, entry for entry, the last row computed by Myers' bit-parallel algorithm (multi-word, global distance): a different algorithm from every implementation's DP, O(L²/32) word operations, ~0.1 s in Node at L = 32768. Checking the whole row catches errors that leave the last cell right. The reference was itself checked against a full-matrix DP for 768 pairs (1–300 characters, unequal lengths, similar strings) and rejects a row with one entry changed.
+- Odd and unequal lengths (all 196 pairs of 1, 2, 3, 4, 5, 7, 17, 255, 256, 257, 511, 512, 513, 1000), similar (3000, 150 substitutions), identical (4097), all-`A` vs. all-`A` (1500 × 700), all-`A` vs. all-`T` (900 × 1300), 4097 × 4099, 32768 × 300, 300 × 32768 and 32768 × 32768 were verified for all six implementations in Chrome 156, two iterations each so the second runs on reused GPU buffers.
+
+First sweep (Chrome 156 headless, M4 Pro **on battery**, 8 threads, 65,536 ns timestamp resolution, one run; `results/results-chrome-2026-10-29T14-57-38.json`). `wasm-scalar` ran faster than the native build, so the worker evidently got P-cores this time; a plugged-in run should confirm. Median compute Mcells/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
+
+| L | js | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
+|---|---|---|---|---|---|---|
+| 64 | 1,030 | 1,550 | 2,780 | 167 | 8 (0.75 / 0.20 ms) | 14 (0.49 / 0.03 ms) |
+| 256 | 1,070 | 1,600 | 5,830 | 2,310 | 48 (1.6 / 0.79 ms) | 182 (0.56 / 0.10 ms) |
+| 1024 | 1,080 | 1,580 | 5,880 | 5,340 | 221 (4.9 / 3.2 ms) | 1,070 (1.2 / 0.66 ms) |
+| 4096 | 1,000 | 1,490 | 5,770 | 13,300 | 870 (20 / 13 ms) | 5,270 (3.4 / 2.9 ms) |
+| 16384 | 1,080 | 1,590 | 5,830 | 26,100 | 3,130 (86 / 64 ms) | 18,600 (15 / 14 ms) |
+| 32768 | 1,070 | 1,570 | 5,780 | 28,400 | 4,920 (219 / 176 ms) | 26,700 (40 / 40 ms) |
+
+- **Every implementation is flat or nearly flat in L except the parallel ones,** which need L large enough to fill their wavefront: `wasm-threads` passes `wasm-simd` at L = 1536 (3×3 tiles) and `gpu-opt` keeps gaining up to 32768, where the widest tile anti-diagonal has 128 workgroups.
+- **`gpu-naive` is dispatch-bound.** 176 ms of GPU time for 65,537 dispatches at L = 32768 is 2.7 µs per dispatch for at most 32,768 cells each, and encoding and submitting them adds another ~40 ms of CPU time to the compute phase. It still beats `js` from L = 6144 and `wasm-scalar` from 8192, but never `wasm-simd`.
+- **`gpu-opt` is barrier-bound.** 255 dispatches take 40 ms at L = 32768, ~156 µs per tile anti-diagonal, i.e. ~0.3 µs per `workgroupBarrier` step. It beats `js` from L = 1536 (compute and end-to-end), `wasm-scalar` from 1536 (compute) or 2048 (end-to-end), `wasm-simd` from 6144, but **never `wasm-threads`** (40 vs. 38 ms at 32768). Upload and readback are tiny (≤ 0.3 ms: L bytes in, 4L bytes out), so unlike sort the GPU loses on the kernel, not on transfers.
+- So the GPU does not lose outright: with the dependency structure exploited (tiles, one barrier per step) it overtakes every single-threaded CPU implementation, but the serial chain of 2L/256 dispatches × 511 barriers keeps it level with 8 CPU threads at best.
+
+`native/` builds the same `editdistance.cpp`; every size up to 8192 and the odd and unequal lengths match a full-matrix DP exactly (larger sizes: rows and tiled agree). Apple M4 Pro, median Mcells/s:
+
+| L | rows scalar | tiled scalar | tiled simd (NEON) | tiled threads (8) |
+|---|---|---|---|---|
+| 64 | 1,690 | 1,700 | 3,930 | 170 (≈ 24 µs, pool wake-up) |
+| 1024 | 1,390 | 1,890 | 8,910 | 7,860 |
+| 4096 | 1,350 | 1,870 | 8,910 | 19,100 |
+| 32768 | 1,350 | 1,880 | 8,900 | 43,800 |
+
+The browser's `wasm-scalar` runs the rows loop faster than this native build (1,570 vs. 1,350 Mcells/s; Emscripten's LLVM and Apple clang 17 schedule the `min` chain differently), while `wasm-simd` and `wasm-threads` reach 65 % of native tiled simd and threads. JS ran at 1.0–1.1 Gcells/s in Chrome 156 but only 0.45 in Node 24, so V8 versions differ widely on this loop.

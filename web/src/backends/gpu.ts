@@ -52,14 +52,15 @@ export function sharedDevice(): Promise<GPUDevice> {
 }
 
 /**
- * Copies `size` bytes of `src` (needs COPY_SRC usage) into a staging buffer and maps it.
- * Pass a reusable `staging` buffer (COPY_DST | MAP_READ, ≥ size bytes) to skip allocating
- * one per call; it is left unmapped. Otherwise a temporary one is created and destroyed.
+ * Copies `size` bytes of `src` (needs COPY_SRC usage), from byte `srcOffset` on, into a
+ * staging buffer and maps it. Pass a reusable `staging` buffer (COPY_DST | MAP_READ,
+ * ≥ size bytes) to skip allocating one per call; it is left unmapped. Otherwise a
+ * temporary one is created and destroyed.
  */
-export async function readBuffer(device: GPUDevice, src: GPUBuffer, size: number, staging?: GPUBuffer): Promise<ArrayBuffer> {
+export async function readBuffer(device: GPUDevice, src: GPUBuffer, size: number, staging?: GPUBuffer, srcOffset = 0): Promise<ArrayBuffer> {
   const buffer = staging ?? device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
   const encoder = device.createCommandEncoder();
-  encoder.copyBufferToBuffer(src, 0, buffer, 0, size);
+  encoder.copyBufferToBuffer(src, srcOffset, buffer, 0, size);
   device.queue.submit([encoder.finish()]);
   await buffer.mapAsync(GPUMapMode.READ, 0, size);
   const copy = buffer.getMappedRange(0, size).slice(0);
