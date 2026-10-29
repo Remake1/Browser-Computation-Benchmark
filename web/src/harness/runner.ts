@@ -1,7 +1,8 @@
 // Measurement protocol (PLAN.md §4). For each (workload, size): generate the input
 // once from a derived seed, shuffle the implementation order, and for each
-// implementation: init once (cold cost), one verified first iteration, warmup,
-// then samples until the sample count / time budget is met.
+// implementation: init once (cold cost), one verified first iteration, GPU clock
+// warmup (WebGPU only), warmup, then samples until the sample count / time budget is met.
+import { heatGpu, sharedDevice } from '../backends/gpu';
 import { deriveSeed, Rng } from './rng';
 import { median } from './stats';
 import { timed } from './timer';
@@ -139,9 +140,16 @@ async function measure(workload: AnyWorkload, impl: Impl, input: unknown, config
     return;
   }
 
+  // Raise the GPU clock (see heatGpu); its time doesn't count against the warmup budget.
+  let warmupClock = warmupStart;
+  if (impl.tech === 'webgpu' && config.gpuWarmupMs > 0) {
+    const [, heatMs] = await timed(async () => heatGpu(await sharedDevice(), config.gpuWarmupMs));
+    warmupClock += heatMs;
+  }
+
   // Warmup (unrecorded); the clock includes the first iteration, so a slow size warms up less.
   const warm: number[] = [];
-  while (warm.length < config.warmupRuns && performance.now() - warmupStart < config.warmupBudgetMs) {
+  while (warm.length < config.warmupRuns && performance.now() - warmupClock < config.warmupBudgetMs) {
     warm.push(total((await iteration(impl, input)).times));
   }
   await impl.gpuTimeMs?.(); // discard warmup GPU times

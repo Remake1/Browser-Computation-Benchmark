@@ -68,6 +68,11 @@ export interface RunConfig {
   warmupRuns: number;
   /** Warmup stops early once this much time has been spent (slow sizes are already JIT-hot). */
   warmupBudgetMs: number;
+  /**
+   * Before warmup, each WebGPU implementation keeps the GPU saturated with a heater
+   * kernel for this long, so the GPU clock is up when sampling starts; 0 disables it.
+   */
+  gpuWarmupMs: number;
   minSamples: number;
   maxSamples: number;
   /** Past minSamples, keep sampling until maxSamples or this much time has been spent. */
@@ -83,6 +88,7 @@ export const DEFAULT_CONFIG: RunConfig = {
   seed: 1,
   warmupRuns: 5,
   warmupBudgetMs: 2000,
+  gpuWarmupMs: 200,
   minSamples: 15,
   maxSamples: 30,
   sampleBudgetMs: 3000,
