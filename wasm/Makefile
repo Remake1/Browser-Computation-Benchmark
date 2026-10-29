@@ -5,6 +5,7 @@
 #
 #   make            build all variants
 #   make check-simd confirm v128 instructions appear in -simd builds and not in -scalar
+#                   (workloads in NO_SIMD have no vector form: only the scalar half is checked)
 #   make clean
 
 ROOT     := $(abspath ..)
@@ -39,6 +40,9 @@ FLAGS_simd    := -msimd128 -sALLOW_MEMORY_GROWTH=1
 FLAGS_threads := -msimd128 -pthread -sPTHREAD_POOL_SIZE='$(THREADS_POOL_SIZE)' \
   -sINITIAL_MEMORY=$(THREADS_INITIAL_MEMORY) -sALLOW_MEMORY_GROWTH=0
 
+# Kernels with no simd128 form; their -simd build is the same code with -msimd128.
+NO_SIMD := sort
+
 TARGETS := $(foreach n,$(NAMES),$(foreach v,$(VARIANTS),$(OUT)/$(n)-$(v).mjs))
 
 .PHONY: all clean check-simd
@@ -59,7 +63,9 @@ check-simd: all
 	  v=$$($(OBJDUMP) -d $(OUT)/$$n-simd.wasm   | grep -c 'v128\|f32x4\|i32x4' || true); \
 	  t=$$($(OBJDUMP) -d $(OUT)/$$n-threads.wasm | grep -c 'v128\|f32x4\|i32x4' || true); \
 	  echo "$$n: simd-instructions scalar=$$s simd=$$v threads=$$t"; \
-	  if [ "$$s" -ne 0 ] || [ "$$v" -eq 0 ] || [ "$$t" -eq 0 ]; then echo "  FAIL"; exit 1; fi; \
+	  if [ "$$s" -ne 0 ]; then echo "  FAIL"; exit 1; fi; \
+	  case " $(NO_SIMD) " in *" $$n "*) echo "  (no vector form expected)"; continue;; esac; \
+	  if [ "$$v" -eq 0 ] || [ "$$t" -eq 0 ]; then echo "  FAIL"; exit 1; fi; \
 	done; echo "check-simd OK"
 
 clean:

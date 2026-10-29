@@ -49,6 +49,8 @@ export interface Workload<I, O> {
   flops?(size: number): number;
   /** Bytes one run must read from and write to memory at this size, for GB/s; omitted where bandwidth isn't the natural unit. */
   bytes?(size: number): number;
+  /** Items one run processes at this size (sort: keys), for M items/s; omitted where FLOPs or bytes are the natural unit. */
+  items?(size: number): number;
   implementations: Implementation<I, O>[];
 }
 

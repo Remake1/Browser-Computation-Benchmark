@@ -205,3 +205,59 @@ N-body is compute-bound with O(n) data. Upload and readback are tiny, so the GPU
 | 1024 | 16.0 | 52 | 256 |
 | 16384 | 15.9 | 52 | 395 |
 | 65536 | 15.5 | 51 | 384 |
+
+## Milestone 4: sort
+
+`web/src/workloads/sort/` sorts a `u32[n]` ascending, n = 2¹⁰…2²⁴, with 1.5× steps between powers of two. Keys are uniform u32. The UI shows M items/s (here Mkeys/s: n / median compute time) for workloads that define `items()`.
+
+| Implementation | What it is |
+|---|---|
+| `js-builtin` | `Uint32Array.prototype.sort()`: engine code, not JS written here |
+| `js-radix` | hand-written LSD radix sort: 8-bit digits, one counting pass for all four histograms, then four stable scatter passes ping-ponging between the array and a scratch buffer |
+| `wasm-std` | `std::sort` (libc++ introsort) from `wasm/src/sort.cpp`, scalar build |
+| `wasm-scalar`, `wasm-simd` | `wasm/src/sort.cpp`, the same radix sort as `js-radix`. It has no vector form (see below), so the simd build is the same code with `-msimd128` |
+| `wasm-threads` | parallel LSD radix sort on contiguous chunks across the persistent pool: per pass, every thread counts its chunk, the caller turns the counts into offsets in (digit, thread) order, every thread scatters its chunk. Stable, so the output is identical |
+| `gpu-naive` | `bitonic.wgsl`: global-memory bitonic sort, keys padded to a power of two with `0xFFFFFFFF`, one dispatch per (k, j) step: log₂N·(log₂N + 1)/2 dispatches (300 at 2²⁴), each through the whole array |
+| `gpu-opt` | `radix-{count,scan,scatter}.wgsl`: LSD radix sort, 4-bit digits, 8 passes of count → scan → scatter over 1024-key blocks, keys padded to a whole block with `0xFFFFFFFF`. The scatter ranks keys stably with a workgroup scan of per-invocation digit counts packed 16 bits per digit into two `vec4u` |
+
+All dispatches of a GPU sort are in one compute pass, so `timestamp-query` covers them all (40 dispatches per `gpu-opt` sort at 2²⁴: 8 × count, scan, scan, add, scatter).
+
+Methodology decisions:
+
+- **The CPU implementations share one algorithm, LSD radix sort, plus two library sorts as reference points.** PLAN.md §7 lists `std::sort` for the C++ scalar/SIMD builds and parallel radix for threads. Following that literally would make `wasm-threads` vs. `wasm-simd` an algorithm comparison as well as a threading one, and leave `js-radix` with no WASM counterpart. So `wasm-scalar`/`wasm-simd`/`wasm-threads` all run the radix sort of `js-radix`, and `std::sort` is measured separately as `wasm-std`. `js-builtin` vs. `wasm-std` compares the engine's own sort with a C++ library sort compiled to WASM.
+- **`wasm-simd` is not vectorized.** Radix sort's work is a histogram increment and a scatter per key, and simd128 has neither gather nor scatter (the increments of one vector's lanes can also hit the same counter). The compiler emits no `v128` instruction for this source, so `check-simd` exempts sort (`NO_SIMD` in `wasm/Makefile`). The variant is kept because `wasm-threads` uses the same flags and it is its single-thread baseline.
+- **Serial radix counts once, parallel radix counts every pass.** The serial versions build all four histograms in one read of the input. Per-thread chunk histograms change after every pass, so the threads build counts each pass again: 4 reads for counting instead of 1.
+- **Sorting is in place, so every implementation copies the input in `setup()`** (the upload phase), including the JS ones, and the radix scratch buffer is allocated there too. The compute phase is the sort alone.
+- **The GPU radix sort is reduce-then-scan, not single-pass.** Single-pass "decoupled look-back" sorts (Onesweep) need forward-progress guarantees between workgroups that WebGPU doesn't give. Reduce-then-scan needs no communication between the workgroups of a dispatch. 4-bit digits keep the histogram (16 × n/1024 entries) to a two-level scan at 2²⁴ and fit 16 counters into the scatter's packed scan.
+- **Padding.** Both GPU sorts write the `0xFFFFFFFF` padding once, when the buffers are allocated. A sort leaves the largest values at the end, which are all `0xFFFFFFFF` because the padding alone provides that many, so the padding is intact for the next iteration's `setup()`.
+- **Verification** (`reference.ts`) requires the output to equal the input sorted by the engine's `Uint32Array` sort, element for element. That checks order and multiset at once. `js-builtin` is checked against itself.
+- Odd sizes (1, 2, 3, 4, 5, 7, 17, 255, 256, 257, 1000, 1023, 1024, 1025, 1536, 4097, 65537) with uniform, all-zero, all-`0xFFFFFFFF`, sorted, reversed, few-distinct (`x & 0x0300000f`) and half-`0xFFFFFFFF` keys, plus 2²⁰+1, 2²⁴ and 2²⁴+3 with uniform and half-`0xFFFFFFFF` keys, were verified for all eight implementations in Chrome 156, two iterations each so the second runs on reused GPU buffers. The input was checked to be unchanged afterwards.
+
+First sweep (Chrome 156 headless, M4 Pro plugged in, 8 threads, 65,536 ns timestamp resolution, one run; `results/results-chrome-2026-10-29T03-28-10.json`). Median compute Mkeys/s, with end-to-end ms in parentheses for the GPU:
+
+| n | js-builtin | js-radix | wasm-std | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
+|---|---|---|---|---|---|---|---|---|
+| 2¹⁰ | 200 | 197 | 123 | 342 | 350 | 5.0 | 2.6 (0.59 ms) | 2.8 (0.56 ms) |
+| 2¹⁴ | 135 | 225 | 84 | 370 | 364 | 68 | 30 (0.77 ms) | 45 (0.59 ms) |
+| 2¹⁸ | 70 | 220 | 45 | 391 | 394 | 504 | 82 (3.8 ms) | 419 (1.2 ms) |
+| 2²⁰ | 64 | 219 | 40 | 362 | 363 | 1,130 | 89 (12.5 ms) | 733 (2.1 ms) |
+| 2²² | 61 | 216 | 38 | 340 | 341 | 1,700 | 82 (55 ms) | 1,160 (7.2 ms) |
+| 2²⁴ | 57 | 213 | 35 | 317 | 319 | 1,720 | 67 (265 ms) | 1,300 (26 ms) |
+
+- **The radix sorts are flat in n, the comparison sorts fall off** as log n grows: `js-builtin` from 200 to 57 Mkeys/s, `wasm-std` from 123 to 35. `js-radix` beats `js-builtin` from 1,536 on, by 3.7× at 2²⁴, so the engine sort alone would make JS look much slower than JS code can be.
+- **`wasm-scalar` is 1.5–1.9× `js-radix`** at every size, with the same algorithm. As expected, `wasm-simd` is indistinguishable from it.
+- **`wasm-threads` passes `wasm-scalar` at 196,608** (≈ 0.2 ms of pool wake-ups: 8 `pool->run` calls per sort) and plateaus at 1.7–1.8 Gkeys/s, the same as native.
+- **`gpu-opt` beats every single-threaded CPU sort from 2¹⁸ (compute) or 2²⁰ (end-to-end), but never `wasm-threads`** on this machine: 12.5 ms of GPU time at 2²⁴ against 9.7 ms for `wasm-threads`, and end-to-end it also pays 6.8 ms upload + 6.1 ms readback of 64 MB. Crossovers against JS (median only, one run): compute from 49,152 vs `js-builtin` and 131,072 vs `js-radix`; end-to-end from 65,536 and 262,144.
+- **`gpu-naive` loses to everything but `js-builtin` at 2²⁴.** Bitonic sort does O(n log² n) work, and every one of its up to 300 steps is a full pass through global memory. Sizes of the form 3·2ᵏ run at the speed of 4·2ᵏ because they are padded to it, hence the sawtooth in its Mkeys/s.
+
+`native/` builds the same `sort.cpp` (Apple clang 17 libc++ `std::sort`). Every size, plus odd and few-distinct inputs, matches `std::sort` exactly. Apple M4 Pro, median Mkeys/s:
+
+| n | radix scalar | radix simd | radix threads (8) | std::sort |
+|---|---|---|---|---|
+| 2¹⁰ | 289 | 289 | 5.1 (≈ 200 µs, pool wake-ups) | 129 |
+| 2¹⁴ | 529 | 483 | 79 | 54 |
+| 2¹⁸ | 461 | 456 | 802 | 29 |
+| 2²⁰ | 360 | 352 | 1,485 | 25 |
+| 2²⁴ | 339 | 330 | 1,794 | 21 |
+
+The browser's `wasm-scalar` reaches 65–85 % of native radix scalar below 2²⁰, where the data is in cache, and 92–100 % from 2²⁰ on. The library sorts don't line up: Chrome's built-in sort (57 Mkeys/s at 2²⁴) and `wasm-std` (35, Emscripten's libc++) are both faster than this native `std::sort` (21, the system libc++). The comparison between library sorts reflects the library versions, not WASM overhead.
