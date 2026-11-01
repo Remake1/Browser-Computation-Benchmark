@@ -13,3 +13,9 @@ web/public/wasm/
 
 # native ceiling builds
 native/bin/
+
+# analysis (milestone 6)
+analysis/.venv/
+analysis/output/
+__pycache__/
+.pytest_cache/

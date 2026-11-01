@@ -405,3 +405,64 @@ Playwright's WebKit is not Safari, so Safari runs from the UI:
 2. open http://localhost:8080/env.html in Safari and check that the verdict passes;
 3. open http://localhost:8080/, leave the default workloads (all but `dummy`), enter device notes in the same form (`Apple M4 Pro (Mac16,8); plugged in; manual`), click **Run** and keep the window in front until the status says `Done`;
 4. **Download JSON** and move the file (`results-safari-<timestamp>.json`) into `results/`.
+
+## Milestone 6: analysis
+
+`analysis/analyze.py` turns results files into the paper's figures and crossover tables. It reads the runner page's **JSON** export or its **CSV** export (`--csv` in `pnpm bench`); if both exports of a run are given, the JSON one is used.
+
+```sh
+python3 -m venv analysis/.venv
+analysis/.venv/bin/pip install -r analysis/requirements.txt     # pinned numpy, pandas, matplotlib, pytest
+analysis/.venv/bin/python analysis/analyze.py                   # every file in results/ → analysis/output/
+analysis/.venv/bin/python analysis/analyze.py results/results-chrome-2026-10-30T03-08-28.json --width 5.5
+analysis/.venv/bin/python analysis/analyze.py --style clean --width 7 --titles   # sans-serif look, with figure titles
+analysis/.venv/bin/python analysis/analyze.py --help
+analysis/.venv/bin/python -m pytest analysis/tests              # crossover rules, JSON/CSV agreement
+```
+
+Output, per browser in `analysis/output/<browser>/` (gitignored; it regenerates from `results/`):
+
+| File | What it shows |
+|---|---|
+| `figures/time-<workload>` | median time per call vs. size (log-log) with the IQR as a band, one panel each for compute, end-to-end and kernel; timed-out sizes as hollow markers at their first iteration's time |
+| `figures/speedup-<metric>` | speedup over the JS baseline per workload (small multiples). The line crosses 1× at the crossover; the band is the conservative quartile ratio [q1(JS)/q3(impl), q3(JS)/q1(impl)], so the band clearing 1× is the IQR rule below. Large filled markers: crossovers; hollow: median-only crossovers |
+| `figures/winners-<metric>` | the fastest implementation at every size; hatched where its IQR overlaps the runner-up's |
+| `figures/crossover-map-<metric>` | for each pair in the crossover table, the size range where the challenger stays ahead |
+| `crossovers.tex`, `crossovers.md` | the crossover table (booktabs, fits a two-column `table*`) |
+| `report.md` | which run fed each workload, warnings (incomplete runs, battery, coarse timestamps, Firefox's 100 ms poll, noisy records), all tables |
+
+and, for all browsers together, `analysis/output/summary.csv` (status, sample count, median / q1 / q3 / IQR % and throughput per metric for every record) and `analysis/output/crossovers.csv` (every ordered pair of implementations, metric and rule, with the interpolated equal-time size).
+
+Methodology:
+
+- **Metrics.** `compute` is the compute phase; `e2e` is upload + compute + readback, what a page pays per call; `kernel` is the timestamp-query time for WebGPU and the compute phase for CPU implementations. Statistics use the measured samples only (the verified first iteration is excluded), each already averaged over `repeats` iterations.
+- **Crossover (PLAN.md §9):** the smallest size N at which the challenger's median is lower than the reference's **and the IQRs don't overlap** (q3 < q1), at N and at every larger size of the sweep. A size where only the medians are ordered counts as a loss under this rule; the median-only crossover is reported alongside it (in parentheses in the table, where it is earlier). `all`: ahead at every size; `—`: not ahead at the largest size, even if it is ahead over some smaller range (listed as `transient_wins` in `crossovers.csv`).
+- **Timeouts.** A size where an implementation timed out (or was skipped after a timeout) is a loss for it against one that finished; the speedup there is a lower bound from the first iteration. Sizes where both timed out, where the reference failed, or where the metric is missing (no GPU timestamps) are left out; a challenger that fails verification loses that size.
+- **Baselines.** JS is `js`, except for sort, where it is `js-radix` (the same algorithm as the WASM radix sorts; `--baseline sort=js-builtin` switches to the engine sort). The library sorts are drawn in gray as reference points.
+- **Several runs** of one browser and workload: the latest complete run is used (`--combine latest`, the default), or the samples of all runs are pooled (`--combine pool`). Runs are grouped by browser only, so pass the files of one machine at a time.
+- **Figure style.** The default `--style arxiv` matches a LaTeX paper. Text and math are set in Computer Modern (bundled with matplotlib, so no TeX installation is needed). Size symbols are italic math (*N* × *N*). Axes are boxed, with inward ticks on all four sides and minor ticks on log axes. The grid is light and dotted, and panels are labelled like subfigures: (a) Matrix multiply, (b) …. Figures have no titles, because the paper's captions carry them (`--titles` adds titles). `--style clean` is a sans-serif alternative with gray chrome.
+- **Figure size.** Figures are 6.5 in wide by default, the text width of `article` with 1 in margins. Set `--width` to your `\textwidth` in inches (NeurIPS/ICML 5.5, IEEE/ACM two-column `figure*` 7.0) and include the PDF at `width=\textwidth`. At that scale the figure text is 7–8.5 pt next to a 10 pt body, i.e. `\footnotesize` to `\small`.
+- **Figures** are vector PDFs with embedded TrueType fonts (no Type 3, which arXiv and most venues flag), plus 300 dpi PNGs. Each implementation keeps one color and one marker in every figure, so the figures stay readable in grayscale and for color-blind readers. The palette was checked with a color-vision-deficiency simulator. The JS baseline is black, and the three colors that stay distinguishable in every pair belong to `gpu-opt`, `wasm-threads` and `wasm-simd`.
+
+Crossovers in Chrome 156 (M4 Pro plugged in, `results/results-chrome-2026-10-30T03-08-28.json`, IQR rule; median-only crossover in parentheses where earlier):
+
+| Workload | Metric | wasm-scalar › JS | wasm-simd › JS | wasm-threads › JS | gpu-opt › JS | wasm-threads › wasm-simd | gpu-opt › wasm-simd | gpu-opt › wasm-threads |
+|---|---|---|---|---|---|---|---|---|
+| Matrix multiply (N) | compute | all | all | 48 | 96 | 96 | 192 | 384 |
+| Matrix multiply (N) | end-to-end | all | all | 48 | 96 | 96 | 192 | 512 |
+| Reduction (n) | compute | all | all | 3·2¹⁴ | 2¹⁹ | 3·2¹⁹ (2²⁰) | 3·2²² | — |
+| Reduction (n) | end-to-end | 2¹⁹ (3·2¹⁷) | all | 2¹⁶ | 3·2¹⁹ | 3·2²² (2²³) | — | — |
+| Sort (n), JS = js-radix | compute | all | all | 3·2¹⁵ | 2¹⁷ | 3·2¹⁶ | 3·2¹⁷ (2¹⁸) | — |
+| Sort (n), JS = js-radix | end-to-end | all | all | 3·2¹⁵ | 3·2¹⁷ (2¹⁸) | 3·2¹⁶ | 2²⁰ | — |
+| Convolution 5×5 (W) | compute | all | all | all | 192 | 256 | 768 | 2,048 |
+| Convolution 5×5 (W) | end-to-end | all | all | all | 192 | 256 | 1,024 | — |
+| N-body (n) | compute | all | all | 192 | 512 | 384 | 1,024 | 3,072 |
+| N-body (n) | end-to-end | all | all | 192 | 768 | 384 | 1,536 | 4,096 |
+| Edit distance (L) | compute | all | all | 192 | 1,024 | 1,024 | 6,144 | — |
+| Edit distance (L) | end-to-end | all | all | 192 | 1,536 | 1,024 | 6,144 | — |
+
+These agree with the median crossovers read off the sweeps by hand in the milestone sections above (e.g. matmul `gpu-opt` over `wasm-threads` from 384 / 512, N-body `gpu-opt` over `wasm-simd` from 1024 / 1536, sort `gpu-opt` over `js-radix` from 131,072 = 2¹⁷).
+
+- **WASM beats JS at every size, with one exception:** end-to-end on reduction, `wasm-scalar` overtakes JS only from 2¹⁹ (median: 3·2¹⁷). Its compute-phase lead there is only ~1.3× (7.3 vs. 5.7 GB/s), and end-to-end time also includes copying the input into the heap.
+- **`gpu-opt` overtakes JS early in every workload:** from N = 96 (matmul), W = 192 (convolution), n = 512–768 (N-body), L = 1024–1536 (edit distance), n = 2¹⁷–3·2¹⁷ (sort) and 2¹⁹–3·2¹⁹ (reduction). Below that, the GPU's ~0.5 ms fixed cost per call decides the result. Against `wasm-simd` the crossovers come 2–12× later in size, and end-to-end on reduction never.
+- **`gpu-opt` overtakes `wasm-threads` only where the work grows faster than the data:** matmul (O(N³)), N-body (O(n²)) and, by compute phase only, convolution. It never overtakes it on reduction (memory-bound), sort (the GPU radix kernel alone is slower than 8 threads; transfers add to that) or edit distance (bound by dependencies and barriers). End-to-end, convolution joins those three, because 64 MB of upload and readback outweigh the kernel.
