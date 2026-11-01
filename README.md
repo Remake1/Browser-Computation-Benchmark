@@ -7,10 +7,11 @@ Measures where WebGPU and WebAssembly overtake JavaScript, per workload and inpu
 | Tool | Version | Notes |
 |---|---|---|
 | Emscripten SDK | 6.0.13 | installed repo-locally by `scripts/setup-emsdk.sh` into `.tools/emsdk` |
-| Node.js | ≥ 20.19 (tested 20.20.0) | required by Vite 8 |
+| Node.js | ≥ 22.18 (tested 24.16.0) | Vite 8 needs ≥ 20.19; `pnpm bench` runs TypeScript through Node's built-in type stripping (≥ 22.18) |
 | pnpm | 11.17.0 | pinned via `packageManager` in `web/package.json` |
 | Vite | 8.3.4 | dev server and production build |
 | TypeScript | 7.0.2 | type-check only; Vite does the transpiling |
+| Playwright | 1.64.1 | `pnpm bench`: drives the installed Google Chrome and Playwright's Firefox 157 build (`playwright firefox v1555`) |
 | Nginx | 1.30.6 (`nginx:1.30.6-alpine`) | production server, run with Docker Compose |
 
 Exact JS dependency versions are locked in `web/pnpm-lock.yaml`.
@@ -23,6 +24,7 @@ cd web
 pnpm install --frozen-lockfile
 pnpm build:wasm                 # wasm/src/*.cpp → web/public/wasm/<name>-{scalar,simd,threads}.{mjs,wasm}
 pnpm check:simd                 # confirms v128 instructions in the simd/threads builds and none in scalar
+pnpm exec playwright install firefox   # once, for pnpm bench (Chrome is the installed Google Chrome)
 ```
 
 Optional native ceiling (same C++, `clang -O3 -ffp-contract=off`):
@@ -41,6 +43,7 @@ Every server sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-E
 |---|---|---|
 | Development | `pnpm dev` | http://localhost:5173 |
 | **Benchmark runs (production)** | `pnpm build && pnpm serve:nginx` | http://localhost:8080 |
+| **Automated benchmark runs (Chrome, Firefox)** | `pnpm bench` (milestone 5) | |
 | Quick production check without Docker | `pnpm build && pnpm preview` | http://localhost:4173 |
 
 Benchmark numbers must come from the production build served by Nginx (`deploy/nginx/`). The dev server is only for development.
@@ -103,6 +106,20 @@ Verification (`reference.ts`) compares against an f64 reference using the compon
 
 **Caveat: Chrome on macOS can run workers on the efficiency cores.** On battery, Chrome 151 ran dedicated workers, including the pthread workers of `wasm-threads`, on the M4 Pro's 4 E-cores. The main thread stayed on the P-cores. The same JS kernel ran at 2.2 GFLOP/s on the page's main thread and 0.3–0.4 in a worker. Combined throughput of 1–8 workers capped at about 4 cores. So CPU numbers measured this way are E-core numbers. This affects CPU numbers only (GPU work is not run on worker threads), and the env notes should say whether the machine was plugged in. On mains power the worker reaches native-like speeds: JS 2.8 GFLOP/s (Node: 2.75), wasm-scalar 8.0 (native: 8.3), wasm-simd 24.5 (native: 33). **Collect benchmark data plugged in.**
 
+Sweep (Chrome 156, M4 Pro plugged in, 8 threads, 1 ns timestamps, one run; `results/results-chrome-2026-10-29T17-52-40.json`). Median compute GFLOP/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
+
+| N | js | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
+|---|---|---|---|---|---|---|
+| 64 | 2.8 | 7.5 | 20.7 | 10.4 | 1.7 (0.53 / 0.0095 ms) | 1.7 (0.52 / 0.0046 ms) |
+| 256 | 2.7 | 7.9 | 24.9 | 138 | 82.6 (0.77 / 0.11 ms) | 96.6 (0.71 / 0.046 ms) |
+| 512 | 2.7 | 7.9 | 24.2 | 179 | 273 (1.8 / 0.72 ms) | 459 (1.4 / 0.33 ms) |
+| 1024 | 2.7 | 7.6 | 24.2 | 185 | 350 (7.2 / 5.6 ms) | 667 (4.3 / 2.6 ms) |
+| 2048 | timeout (6.4 s) | 7.4 | 23.0 | 167 | 385 (50 / 44 ms) | 816 (26 / 21 ms) |
+
+- **The WASM builds reach 70–96 % of native:** `wasm-scalar` 7.4–8.0 GFLOP/s (native 8.3), `wasm-simd` 23–27 (native 33), `wasm-threads` up to 185 at N = 768–1024 (native 251). JS runs at a third of `wasm-scalar`.
+- **`gpu-opt` beats `wasm-threads` from N = 384 (compute) or 512 (end-to-end)** and reaches 816 GFLOP/s at 2048, 4.9× `wasm-threads`. Its kernel is 2.1–2.2× faster than `gpu-naive`'s from N = 512 on (20.7 vs. 44.2 ms at 2048).
+- **Up to N = 64 the GPU is all fixed cost:** about 0.5 ms end-to-end, of which ~0.29 ms is the compute phase (submit to `onSubmittedWorkDone`) around a kernel of under 10 µs.
+
 ## Milestone 3: reduction
 
 `web/src/workloads/reduction/` sums an `f32[n]`, n = 2¹⁰…2²⁶, with 1.5× steps between powers of two. The UI shows GB/s (4n bytes / median compute time) for workloads that define `bytes()`, which is the natural unit for this memory-bound kernel.
@@ -136,6 +153,22 @@ Methodology decisions:
 | 2²² | 7.2 | 106 | 308 |
 | 2²⁶ | 7.2 | 95 | 244 (DRAM; 273 GB/s peak) |
 
+Sweep (Chrome 156, M4 Pro plugged in, 8 threads, 1 ns timestamps, one run; `results/results-chrome-2026-10-29T17-52-40.json`). Median compute GB/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
+
+| n | js | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
+|---|---|---|---|---|---|---|
+| 2¹⁰ | 4.8 | 6.3 | 24.3 | 0.19 | 0.015 (0.47 / 0.0065 ms) | 0.015 (0.47 / 0.0037 ms) |
+| 2¹⁴ | 5.8 | 7.8 | 80.8 | 2.6 | 0.24 (0.49 / 0.0074 ms) | 0.24 (0.49 / 0.0065 ms) |
+| 2¹⁸ | 5.6 | 7.5 | 90.4 | 32.0 | 3.4 (0.77 / 0.036 ms) | 3.7 (0.73 / 0.0074 ms) |
+| 2²⁰ | 5.7 | 7.3 | 90.2 | 102 | 7.8 (0.99 / 0.11 ms) | 10.0 (0.83 / 0.012 ms) |
+| 2²² | 5.7 | 7.3 | 93.2 | 183 | 24.1 (2.6 / 0.41 ms) | 52.4 (2.2 / 0.045 ms) |
+| 2²⁴ | 5.9 | 7.3 | 81.3 | 210 | 29.8 (9.0 / 1.9 ms) | 122 (7.8 / 0.25 ms) |
+| 2²⁶ | 6.0 | 7.4 | 80.4 | 166 | 37.5 (37 / 5.8 ms) | 90.6 (35 / 1.7 ms) |
+
+- **The CPU side matches native:** `wasm-scalar` (7.3–7.8 GB/s) is bound by add latency like the native build (7.2), and JS (5.7–6.0) is not far behind. `wasm-simd` reaches 80–93 GB/s (native 95–106), and `wasm-threads` passes it at 2²⁰ and peaks at 213 GB/s at 2²³ (native 308 at 2²²).
+- **The compute phase hides the GPU kernel.** It never drops below ~0.27 ms, so the GB/s above lag far behind the timestamps: `gpu-opt`'s kernel sums 2²⁴ floats in 0.25 ms (274 GB/s, the M4 Pro's DRAM peak) and 2²² in 0.045 ms (370 GB/s, presumably from the system-level cache), while the compute phase takes 0.55 and 0.32 ms. Measured by the compute phase, `gpu-opt` never beats `wasm-threads` and beats `wasm-simd` only at some sizes from 3·2²² on, where the compute phase becomes erratic (0.55 ms at 2²⁴, 2.6 ms at 2²⁵). `gpu-naive`'s kernel is 3–9× slower than `gpu-opt`'s from 2²² on.
+- **End-to-end the GPU never beats `wasm-simd`.** Uploading the input runs at ~9 GB/s (30 ms for 256 MB at 2²⁶), ten times longer than `wasm-simd` takes to sum it.
+
 ## Milestone 3: convolution
 
 `web/src/workloads/convolution/` convolves a W×W grayscale `f32` image with a fixed 5×5 Gaussian (the binomial kernel [1 4 6 4 1]ᵀ[1 4 6 4 1] / 256), clamping at the edges, for W = 64…4096 with 1.5× steps between powers of two. The UI shows GFLOP/s (50 W², i.e. 25 multiply-adds per pixel) and GB/s (8 W²: each pixel read once and written once).
@@ -164,6 +197,21 @@ Methodology decisions:
 | 2048 | 17.8 | 50 | 367 |
 | 4096 | 17.8 | 45 | 323 |
 
+Sweep (Chrome 156, M4 Pro plugged in, 8 threads, 1 ns timestamps, one run; `results/results-chrome-2026-10-29T17-52-40.json`). Median compute GFLOP/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
+
+| W | js | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
+|---|---|---|---|---|---|---|
+| 64 | 2.7 | 14.8 | 38.4 | 6.9 | 0.77 (0.47 / 0.0029 ms) | 0.76 (0.47 / 0.0027 ms) |
+| 256 | 2.9 | 15.3 | 43.1 | 58.2 | 12.1 (0.55 / 0.0055 ms) | 12.2 (0.55 / 0.0056 ms) |
+| 1024 | 2.9 | 15.4 | 44.4 | 244 | 113 (1.2 / 0.052 ms) | 115 (1.2 / 0.051 ms) |
+| 2048 | 2.9 | 15.4 | 44.1 | 294 | 378 (4.2 / 0.21 ms) | 392 (4.1 / 0.20 ms) |
+| 3072 | 2.9 | 15.4 | 44.8 | 322 | 486 (8.2 / 0.58 ms) | 581 (8.1 / 0.46 ms) |
+| 4096 | 2.9 | 14.3 | 42.3 | 314 | 556 (14.8 / 1.0 ms) | 491 (13.9 / 0.86 ms) |
+
+- **The WASM builds reach about 85 % of native** (`wasm-scalar` 14.3–15.5 GFLOP/s vs. 17.8, `wasm-simd` 36–45 vs. 43–51, `wasm-threads` up to 322 vs. 367). JS stays at 2.7–2.9 (no unrolling, see above).
+- **The GPU kernels confirm the A/B above:** `gpu-opt` is 20 % faster than `gpu-naive` at W = 3072 and 17 % at 4096 by timestamps, and within 5 % at W = 2048 and below (except at 1536, where both kernels' timestamps are noisy). At 4096 its kernel runs at 970 GFLOP/s. The compute-phase medians at W = 1024 and 4096 are noisy (IQR ~40 %), which reverses the order of the two kernels at 4096 in the table; the timestamps are the reliable comparison.
+- **Transfers decide end-to-end.** At W = 4096 the GPU spends 6.2 ms uploading and 6.0 ms reading back 64 MB each, against a 0.86 ms kernel. By the compute phase the GPU beats `wasm-threads` from W = 2048; end-to-end it never does (13.9 vs. 2.7 ms at 4096). It beats `wasm-simd` from 512 (compute) or 1024 (end-to-end).
+
 ## Milestone 3: N-body
 
 `web/src/workloads/nbody/` computes one step of an n-body simulation, n = 64…65536 with 1.5× steps between powers of two. Bodies are `vec4` (x, y, z, mass), with positions uniform in [−1, 1)³ and masses in [0.5, 1). The output is each body's softened gravitational acceleration, a_i = Σ_j m_j (p_j − p_i) / (|p_j − p_i|² + ε²)^{3/2} with G = 1 and ε² = 0.01, as `vec4` (ax, ay, az, 0). The sum runs over every j including i, whose term is exactly 0 thanks to the softening, so no implementation branches in the inner loop. The UI shows GFLOP/s at the conventional 20 flops per interaction (20 n²).
@@ -185,17 +233,17 @@ Methodology decisions:
 - **Verification** (`reference.ts`) uses a componentwise bound like matmul's: |a − R| ≤ 1e-3 · Σ_j |term_j| per component, and w must be 0. Natively, the measured error is at most 8.5e-6 of this bound at n = 16384. The f64 reference is O(n²), so above 2²⁷ interactions it checks a subset of bodies: the first and last 16 plus an even spread (2,048 bodies at n = 65536).
 - Odd sizes (1, 2, 3, 5, 7, 33, 100, 129, 1001, 4097, 13001: SIMD tails, partial workgroups and tiles, uneven thread splits, and the subset verification) were verified for all six implementations in Chrome 155.
 
-First sweep (Chrome 155 headless, M4 Pro on battery, one run; median compute GFLOP/s, end-to-end ms in parentheses where the GPU is concerned):
+Sweep (Chrome 156, M4 Pro plugged in, 8 threads, 1 ns timestamps, one run; `results/results-chrome-2026-10-29T17-52-40.json`). Median compute GFLOP/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
 
 | n | js | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
 |---|---|---|---|---|---|---|
-| 256 | 12.7 | 14.8 | 47 | 31 | 4.1 (0.53 ms) | 3.7 (0.58 ms) |
-| 1024 | 12.1 | 13.1 | 47 | 174 | 32 (0.86 ms) | 50 (0.65 ms) |
-| 4096 | 12.5 | 13.8 | 46 | 330 | 520 (0.89 ms) | 780 (0.68 ms) |
-| 16384 | 12.3 | 13.9 | 46 | 348 | 1,980 | 3,020 |
-| 65536 | timeout (6.9 s) | timeout (6.3 s) | 45 | 348 | 2,580 | 3,720 |
+| 256 | 12.4 | 13.8 | 44.8 | 30.5 | 4.7 (0.48 / 0.022 ms) | 4.7 (0.48 / 0.0096 ms) |
+| 1024 | 12.4 | 14.1 | 45.3 | 174 | 60.1 (0.55 / 0.086 ms) | 71.1 (0.50 / 0.031 ms) |
+| 4096 | 12.5 | 14.2 | 45.4 | 331 | 527 (0.88 / 0.34 ms) | 847 (0.62 / 0.13 ms) |
+| 16384 | 12.3 | 14.1 | 45.5 | 350 | 1,980 (3.0 / 2.4 ms) | 3,020 (2.1 / 1.5 ms) |
+| 65536 | timeout (6.9 s) | timeout (6.0 s) | 45.7 | 350 | 2,640 (33 / 32 ms) | 3,890 (23 / 22 ms) |
 
-N-body is compute-bound with O(n) data. Upload and readback are tiny, so the GPU's fixed cost of ~0.5 ms per iteration (submit + `onSubmittedWorkDone` + map) is the whole story at small n. JS is within 15 % of `wasm-scalar` here: the loop is bound by `sqrt` and division latency, which V8's f64 code pays just like the f32 WASM.
+N-body is compute-bound with O(n) data. Upload and readback are tiny, so the GPU's fixed cost of ~0.5 ms per iteration (submit + `onSubmittedWorkDone` + map) is the whole story at small n. JS is within 15 % of `wasm-scalar` here: the loop is bound by `sqrt` and division latency, which V8's f64 code pays just like the f32 WASM. The WASM builds reach about 90 % of native (`wasm-simd` 45.5 vs. 52, `wasm-threads` 350 vs. 384–395). `gpu-opt` beats `wasm-simd` from n = 1024 (compute) or 1536 (end-to-end) and `wasm-threads` from 3072, and runs 11× faster than `wasm-threads` at 65536. Its kernel is 1.5–2.8× faster than `gpu-naive`'s.
 
 `native/` builds the same `nbody.cpp` (`NATIVE_SIMD` swaps the wasm intrinsics for clang vector extensions). Every size up to 16384 and the odd sizes pass the same bound. Apple M4 Pro, median GFLOP/s:
 
@@ -233,22 +281,24 @@ Methodology decisions:
 - **Verification** (`reference.ts`) requires the output to equal the input sorted by the engine's `Uint32Array` sort, element for element. That checks order and multiset at once. `js-builtin` is checked against itself.
 - Odd sizes (1, 2, 3, 4, 5, 7, 17, 255, 256, 257, 1000, 1023, 1024, 1025, 1536, 4097, 65537) with uniform, all-zero, all-`0xFFFFFFFF`, sorted, reversed, few-distinct (`x & 0x0300000f`) and half-`0xFFFFFFFF` keys, plus 2²⁰+1, 2²⁴ and 2²⁴+3 with uniform and half-`0xFFFFFFFF` keys, were verified for all eight implementations in Chrome 156, two iterations each so the second runs on reused GPU buffers. The input was checked to be unchanged afterwards.
 
-First sweep (Chrome 156 headless, M4 Pro plugged in, 8 threads, 65,536 ns timestamp resolution, one run; `results/results-chrome-2026-10-29T03-28-10.json`). Median compute Mkeys/s, with end-to-end ms in parentheses for the GPU:
+Sweep (Chrome 156, M4 Pro plugged in, 8 threads, 1 ns timestamps, one run; `results/results-chrome-2026-10-29T17-52-40.json`). Median compute Mkeys/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
 
 | n | js-builtin | js-radix | wasm-std | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
 |---|---|---|---|---|---|---|---|---|
-| 2¹⁰ | 200 | 197 | 123 | 342 | 350 | 5.0 | 2.6 (0.59 ms) | 2.8 (0.56 ms) |
-| 2¹⁴ | 135 | 225 | 84 | 370 | 364 | 68 | 30 (0.77 ms) | 45 (0.59 ms) |
-| 2¹⁸ | 70 | 220 | 45 | 391 | 394 | 504 | 82 (3.8 ms) | 419 (1.2 ms) |
-| 2²⁰ | 64 | 219 | 40 | 362 | 363 | 1,130 | 89 (12.5 ms) | 733 (2.1 ms) |
-| 2²² | 61 | 216 | 38 | 340 | 341 | 1,700 | 82 (55 ms) | 1,160 (7.2 ms) |
-| 2²⁴ | 57 | 213 | 35 | 317 | 319 | 1,720 | 67 (265 ms) | 1,300 (26 ms) |
+| 2¹⁰ | 182 | 192 | 118 | 327 | 324 | 5.1 | 2.6 (0.59 / 0.099 ms) | 2.8 (0.56 / 0.075 ms) |
+| 2¹⁴ | 124 | 222 | 80.7 | 359 | 360 | 69.1 | 30.3 (0.76 / 0.22 ms) | 45.2 (0.59 / 0.076 ms) |
+| 2¹⁸ | 67.6 | 219 | 44.8 | 393 | 393 | 530 | 79.0 (3.9 / 2.8 ms) | 425 (1.2 / 0.31 ms) |
+| 2²⁰ | 62.2 | 220 | 40.3 | 370 | 370 | 1,170 | 90.2 (12.5 / 11.0 ms) | 763 (2.2 / 0.87 ms) |
+| 2²² | 59.8 | 217 | 37.5 | 342 | 342 | 1,710 | 83.4 (54 / 50 ms) | 1,160 (7.4 / 3.2 ms) |
+| 2²⁴ | 56.7 | 210 | 34.9 | 316 | 317 | 1,740 | 66.7 (265 / 251 ms) | 1,300 (26 / 12.4 ms) |
 
-- **The radix sorts are flat in n, the comparison sorts fall off** as log n grows: `js-builtin` from 200 to 57 Mkeys/s, `wasm-std` from 123 to 35. `js-radix` beats `js-builtin` from 1,536 on, by 3.7× at 2²⁴, so the engine sort alone would make JS look much slower than JS code can be.
-- **`wasm-scalar` is 1.5–1.9× `js-radix`** at every size, with the same algorithm. As expected, `wasm-simd` is indistinguishable from it.
-- **`wasm-threads` passes `wasm-scalar` at 196,608** (≈ 0.2 ms of pool wake-ups: 8 `pool->run` calls per sort) and plateaus at 1.7–1.8 Gkeys/s, the same as native.
-- **`gpu-opt` beats every single-threaded CPU sort from 2¹⁸ (compute) or 2²⁰ (end-to-end), but never `wasm-threads`** on this machine: 12.5 ms of GPU time at 2²⁴ against 9.7 ms for `wasm-threads`, and end-to-end it also pays 6.8 ms upload + 6.1 ms readback of 64 MB. Crossovers against JS (median only, one run): compute from 49,152 vs `js-builtin` and 131,072 vs `js-radix`; end-to-end from 65,536 and 262,144.
-- **`gpu-naive` loses to everything but `js-builtin` at 2²⁴.** Bitonic sort does O(n log² n) work, and every one of its up to 300 steps is a full pass through global memory. Sizes of the form 3·2ᵏ run at the speed of 4·2ᵏ because they are padded to it, hence the sawtooth in its Mkeys/s.
+The first sweep (headless, plugged in, 65,536 ns timestamps; `results/results-chrome-2026-10-29T03-28-10.json`) gave the same picture and the same GPU and `wasm-threads` crossovers.
+
+- **The radix sorts are flat in n, the comparison sorts fall off** as log n grows: `js-builtin` from 182 to 57 Mkeys/s, `wasm-std` from 118 to 35. `js-radix` beats `js-builtin` at every size, by 3.7× at 2²⁴, so the engine sort alone would make JS look much slower than JS code can be.
+- **`wasm-scalar` is 1.5–1.8× `js-radix`** at every size, with the same algorithm. As expected, `wasm-simd` is indistinguishable from it.
+- **`wasm-threads` passes `wasm-scalar` at 196,608** (≈ 0.2 ms of pool wake-ups: 8 `pool->run` calls per sort) and plateaus at 1.6–1.8 Gkeys/s, the same as native.
+- **`gpu-opt` beats every single-threaded CPU sort from 2¹⁸ (compute) or 2²⁰ (end-to-end), but never `wasm-threads`** on this machine: 12.4 ms of GPU time at 2²⁴ against 9.6 ms for `wasm-threads`, and end-to-end it also pays 7.2 ms upload + 6.2 ms readback of 64 MB. Crossovers against JS (median only, one run): compute from 49,152 vs `js-builtin` and 131,072 vs `js-radix`; end-to-end from 65,536 and 262,144.
+- **`gpu-naive` loses to everything but the two library sorts at 2²⁴.** Bitonic sort does O(n log² n) work, and every one of its up to 300 steps is a full pass through global memory. Sizes of the form 3·2ᵏ run at the speed of 4·2ᵏ because they are padded to it, hence the sawtooth in its Mkeys/s.
 
 `native/` builds the same `sort.cpp` (Apple clang 17 libc++ `std::sort`). Every size, plus odd and few-distinct inputs, matches `std::sort` exactly. Apple M4 Pro, median Mkeys/s:
 
@@ -287,20 +337,22 @@ Methodology decisions:
 - **Verification** (`reference.ts`) requires the output row to equal, entry for entry, the last row computed by Myers' bit-parallel algorithm (multi-word, global distance): a different algorithm from every implementation's DP, O(L²/32) word operations, ~0.1 s in Node at L = 32768. Checking the whole row catches errors that leave the last cell right. The reference was itself checked against a full-matrix DP for 768 pairs (1–300 characters, unequal lengths, similar strings) and rejects a row with one entry changed.
 - Odd and unequal lengths (all 196 pairs of 1, 2, 3, 4, 5, 7, 17, 255, 256, 257, 511, 512, 513, 1000), similar (3000, 150 substitutions), identical (4097), all-`A` vs. all-`A` (1500 × 700), all-`A` vs. all-`T` (900 × 1300), 4097 × 4099, 32768 × 300, 300 × 32768 and 32768 × 32768 were verified for all six implementations in Chrome 156, two iterations each so the second runs on reused GPU buffers.
 
-First sweep (Chrome 156 headless, M4 Pro **on battery**, 8 threads, 65,536 ns timestamp resolution, one run; `results/results-chrome-2026-10-29T14-57-38.json`). `wasm-scalar` ran faster than the native build, so the worker evidently got P-cores this time; a plugged-in run should confirm. Median compute Mcells/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
+Sweep (Chrome 156, M4 Pro plugged in, 8 threads, 1 ns timestamps, one run; `results/results-chrome-2026-10-29T17-52-40.json`). Median compute Mcells/s, with end-to-end ms and GPU timestamp ms in parentheses for the GPU:
 
 | L | js | wasm-scalar | wasm-simd | wasm-threads | gpu-naive | gpu-opt |
 |---|---|---|---|---|---|---|
-| 64 | 1,030 | 1,550 | 2,780 | 167 | 8 (0.75 / 0.20 ms) | 14 (0.49 / 0.03 ms) |
-| 256 | 1,070 | 1,600 | 5,830 | 2,310 | 48 (1.6 / 0.79 ms) | 182 (0.56 / 0.10 ms) |
-| 1024 | 1,080 | 1,580 | 5,880 | 5,340 | 221 (4.9 / 3.2 ms) | 1,070 (1.2 / 0.66 ms) |
-| 4096 | 1,000 | 1,490 | 5,770 | 13,300 | 870 (20 / 13 ms) | 5,270 (3.4 / 2.9 ms) |
-| 16384 | 1,080 | 1,590 | 5,830 | 26,100 | 3,130 (86 / 64 ms) | 18,600 (15 / 14 ms) |
-| 32768 | 1,070 | 1,570 | 5,780 | 28,400 | 4,920 (219 / 176 ms) | 26,700 (40 / 40 ms) |
+| 64 | 876 | 1,500 | 3,350 | 172 | 7.6 (0.74 / 0.19 ms) | 13.8 (0.50 / 0.025 ms) |
+| 256 | 1,030 | 1,590 | 5,630 | 2,310 | 48.2 (1.6 / 0.77 ms) | 182 (0.56 / 0.094 ms) |
+| 1024 | 1,060 | 1,590 | 5,800 | 5,780 | 221 (5.0 / 3.2 ms) | 1,070 (1.2 / 0.66 ms) |
+| 4096 | 1,090 | 1,590 | 5,820 | 12,800 | 897 (19 / 13 ms) | 5,100 (3.5 / 2.9 ms) |
+| 16384 | 1,090 | 1,580 | 5,830 | 26,000 | 3,130 (86 / 64 ms) | 19,000 (14 / 14 ms) |
+| 32768 | 1,090 | 1,580 | 5,820 | 28,200 | 4,870 (221 / 178 ms) | 26,500 (41 / 40 ms) |
+
+An earlier sweep on battery (headless, 65,536 ns timestamps; `results/results-chrome-2026-10-29T14-57-38.json`) agreed within 4 % from L = 6144 on and within 12 % (in both directions) from 256 on, so the worker got P-cores there too.
 
 - **Every implementation is flat or nearly flat in L except the parallel ones,** which need L large enough to fill their wavefront: `wasm-threads` passes `wasm-simd` at L = 1536 (3×3 tiles) and `gpu-opt` keeps gaining up to 32768, where the widest tile anti-diagonal has 128 workgroups.
-- **`gpu-naive` is dispatch-bound.** 176 ms of GPU time for 65,537 dispatches at L = 32768 is 2.7 µs per dispatch for at most 32,768 cells each, and encoding and submitting them adds another ~40 ms of CPU time to the compute phase. It still beats `js` from L = 6144 and `wasm-scalar` from 8192, but never `wasm-simd`.
-- **`gpu-opt` is barrier-bound.** 255 dispatches take 40 ms at L = 32768, ~156 µs per tile anti-diagonal, i.e. ~0.3 µs per `workgroupBarrier` step. It beats `js` from L = 1536 (compute and end-to-end), `wasm-scalar` from 1536 (compute) or 2048 (end-to-end), `wasm-simd` from 6144, but **never `wasm-threads`** (40 vs. 38 ms at 32768). Upload and readback are tiny (≤ 0.3 ms: L bytes in, 4L bytes out), so unlike sort the GPU loses on the kernel, not on transfers.
+- **`gpu-naive` is dispatch-bound.** 178 ms of GPU time for 65,537 dispatches at L = 32768 is 2.7 µs per dispatch for at most 32,768 cells each, and encoding and submitting them adds another ~40 ms of CPU time to the compute phase. It still beats `js` from L = 6144 and `wasm-scalar` from 8192, but never `wasm-simd`.
+- **`gpu-opt` is barrier-bound.** 255 dispatches take 40 ms at L = 32768, ~156 µs per tile anti-diagonal, i.e. ~0.3 µs per `workgroupBarrier` step. It beats `js` from L = 1024 (compute, a tie there) or 1536 (end-to-end), `wasm-scalar` from 1536 (compute) or 2048 (end-to-end), `wasm-simd` from 6144, but **never `wasm-threads`** (40 vs. 38 ms at 32768). Upload and readback are tiny (≤ 0.3 ms: L bytes in, 4L bytes out), so unlike sort the GPU loses on the kernel, not on transfers.
 - So the GPU does not lose outright: with the dependency structure exploited (tiles, one barrier per step) it overtakes every single-threaded CPU implementation, but the serial chain of 2L/256 dispatches × 511 barriers keeps it level with 8 CPU threads at best.
 
 `native/` builds the same `editdistance.cpp`; every size up to 8192 and the odd and unequal lengths match a full-matrix DP exactly (larger sizes: rows and tiled agree). Apple M4 Pro, median Mcells/s:
@@ -312,4 +364,44 @@ First sweep (Chrome 156 headless, M4 Pro **on battery**, 8 threads, 65,536 ns ti
 | 4096 | 1,350 | 1,870 | 8,910 | 19,100 |
 | 32768 | 1,350 | 1,880 | 8,900 | 43,800 |
 
-The browser's `wasm-scalar` runs the rows loop faster than this native build (1,570 vs. 1,350 Mcells/s; Emscripten's LLVM and Apple clang 17 schedule the `min` chain differently), while `wasm-simd` and `wasm-threads` reach 65 % of native tiled simd and threads. JS ran at 1.0–1.1 Gcells/s in Chrome 156 but only 0.45 in Node 24, so V8 versions differ widely on this loop.
+The browser's `wasm-scalar` runs the rows loop faster than this native build (1,580 vs. 1,350 Mcells/s; Emscripten's LLVM and Apple clang 17 schedule the `min` chain differently), while `wasm-simd` and `wasm-threads` reach 65 % of native tiled simd and threads. JS ran at 0.9–1.1 Gcells/s in Chrome 156 but only 0.45 in Node 24, so V8 versions differ widely on this loop.
+
+## Milestone 5: automation
+
+`pnpm bench` (in `web/`; `web/scripts/bench.ts`) produces one results file per browser with one command:
+
+1. runs `pnpm build:wasm` and `pnpm build` (skip with `--no-build`);
+2. uses the server already answering at the URL, or starts one and stops it at the end: Nginx through Docker Compose (default, http://localhost:8080) or `vite preview` with `--server preview` (http://localhost:4173). A server that answers without COOP/COEP headers is rejected;
+3. for each browser in turn (Chrome, then Firefox), launches it **headed** with Playwright, opens `env.html` and requires the milestone 0 verdict to pass, then opens the runner page, selects the workloads, fills in the seed and device notes, clicks **Run**, prints progress, and saves the page's own **Download JSON** file to `results/` under the page's file name (`--csv` also saves the CSV);
+4. prints a summary per browser (user agent, records per status, thread count, timestamp resolution, commit) and warns about an incomplete run, a worker without cross-origin isolation or WebGPU adapter, and invalid or errored records.
+
+```sh
+cd web
+pnpm bench                                          # everything, both browsers
+pnpm bench --browsers firefox --workloads matmul,sort --seed 2
+pnpm bench --server preview                         # without Docker
+pnpm bench --help
+```
+
+- **Chrome** is the installed Google Chrome (`channel: 'chrome'`), the same browser as manual runs, started with `--enable-webgpu-developer-features` for 1 ns timestamps. Playwright already passes `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows` and `--disable-renderer-backgrounding`, so a covered window keeps its timers and priority.
+- **Firefox** is Playwright's patched build, because Playwright can't drive stable Firefox. `dom.webgpu.enabled` and `dom.webgpu.workers.enabled` are set explicitly. Its user agent (`Firefox/157.0`) is recorded like any other.
+- **Headed, because** headless Firefox has no WebGPU adapter (milestone 0) and headless Chrome's GPU numbers were not used for the sweeps.
+- **Device notes** are the `--notes` text (default: the CPU and hardware model from `sysctl`), the power source from `pmset` and `automated: Playwright <version>, headed`, e.g. `Apple M4 Pro (Mac16,8); plugged in; automated: Playwright 1.64.1, headed`. **On battery the script refuses to run** (workers land on the E-cores, milestone 2) unless given `--force`, which also overrides a failed environment check.
+- **Ctrl-C** clicks **Stop**, saves the records finished so far (`complete: false`) and skips the remaining browsers; a second Ctrl-C quits at once.
+- The exit status is 0 only if every browser produced a complete, cross-origin-isolated run.
+
+**Automated Chrome measures the same as manual Chrome.** A matmul run through `pnpm bench` (Chrome 156, M4 Pro plugged in) matched the manual sweep (`results/results-chrome-2026-10-29T17-52-40.json`) within 3 % in median compute time for every CPU implementation from N = 128 on (e.g. `wasm-threads` 183.8 vs. 185.4 GFLOP/s at 1024), so the automated worker gets the P-cores. The GPU implementations matched within 2 % from N = 128 on, except at 512 (`gpu-opt` 416 vs. 459 GFLOP/s, `gpu-naive` 246 vs. 273), a size whose compute phase is noisy. Below N = 128, where a run takes microseconds, the two runs differ by up to ±21 % in both directions (`wasm-threads`, `gpu-naive` at N = 48), which is run-to-run noise rather than a bias of the automation.
+
+**Firefox reports GPU completion only every 100 ms.** Its GPU process polls devices on a repeating 100 ms timer (`POLL_TIME_MS` in `dom/webgpu/ipc/WebGPUParent.cpp`), and neither `submit` nor `mapAsync` triggers a poll. So every `onSubmittedWorkDone` and `mapAsync` resolves at the next tick. In a sort run (Firefox 157, Playwright's build) every GPU phase took 102–105 ms from n = 1024 to 196,608: upload, compute and readback each, around kernels of 0.4–4 ms by timestamps (Chrome: compute phase 0.4–1.6 ms). Each iteration is one tick per phase, so the waits stay phase-locked to the timer. A run in stable Firefox showed the same ~300 ms per iteration on `dummy` at every size, so this is Firefox itself, not Playwright's build. The CPU implementations are unaffected. Consequences:
+
+- Firefox's GPU compute and end-to-end medians measure the timer, not the GPU. Its kernel times come only from `timestamp-query`. The ~300 ms end-to-end floor is real for any page that awaits GPU results in Firefox.
+- Each GPU record takes ~8 s at every size (first run, 5 warmups and at least 15 samples of ~310 ms), so a Firefox run spends nearly all its time waiting: in sort, 259 of the first 267 s went to the two GPU implementations.
+
+### Safari (manual)
+
+Playwright's WebKit is not Safari, so Safari runs from the UI:
+
+1. `pnpm build && pnpm serve:nginx`, with the Mac plugged in;
+2. open http://localhost:8080/env.html in Safari and check that the verdict passes;
+3. open http://localhost:8080/, leave the default workloads (all but `dummy`), enter device notes in the same form (`Apple M4 Pro (Mac16,8); plugged in; manual`), click **Run** and keep the window in front until the status says `Done`;
+4. **Download JSON** and move the file (`results-safari-<timestamp>.json`) into `results/`.
